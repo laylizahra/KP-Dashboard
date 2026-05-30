@@ -1,0 +1,1410 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from statsmodels.tsa.seasonal import STL
+from statsmodels.tsa.stattools import adfuller
+from tensorflow.keras.models import Sequential, load_model
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional
+from tensorflow.keras.callbacks import EarlyStopping, Callback
+import warnings, os
+warnings.filterwarnings("ignore")
+import os
+import random
+import numpy as np
+import tensorflow as tf
+
+SEED = 42
+
+os.environ['PYTHONHASHSEED']        = str(SEED)
+os.environ['TF_DETERMINISTIC_OPS']  = '1'
+os.environ['TF_CUDNN_DETERMINISTIC'] = '1'
+
+random.seed(SEED)
+np.random.seed(SEED)
+tf.random.set_seed(SEED)
+
+# KONFIGURASI HALAMAN
+# ─────────────────────────────────────────────
+st.set_page_config(
+    page_title="Coal Forecast Dashboard",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# CSS GLOBAL
+# ─────────────────────────────────────────────
+st.markdown("""
+<style>
+    /* Reset padding */
+    .block-container {
+        padding: 0 !important;
+        max-width: 100% !important;
+    }
+    [data-testid="stHeader"] { display: none !important; }
+    [data-testid="stAppViewContainer"] > .main {
+        padding: 0 !important;
+    }
+
+    /* Warna dasar */
+    body, .main {
+        background-color: #ffffff !important;
+        color: #1a1a1a !important;
+    }
+
+    /* Sidebar */
+    [data-testid="stSidebar"] {
+        background-color: #1a1a2e !important;
+        border-right: 3px solid #FFD700 !important;
+    }
+    [data-testid="stSidebar"] {
+        color: white !important;
+    }
+    [data-testid="stSidebar"] .stSelectbox label,
+    [data-testid="stSidebar"] .stSlider label,
+    [data-testid="stSidebar"] .stFileUploader label {
+        color: #FFD700 !important;
+        font-weight: 600 !important;
+    }
+    [data-testid="stSidebar"] input,
+    [data-testid="stSidebar"] select {
+        background: #2d2d44 !important;
+        color: white !important;
+        border: 1px solid #FFD700 !important;
+    }
+            
+    /* FILE UPLOADER SIDEBAR */
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] {
+        color: white !important;
+    }
+
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] section {
+        background: #2d2d44 !important;
+        border: 2px dashed #FFD700 !important;
+        border-radius: 10px !important;
+        padding: 1rem !important;
+    }
+
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] button {
+        background: #FFD700 !important;
+        color: #1a1a2e !important;
+        font-weight: 700 !important;
+        border-radius: 8px !important;
+    }
+
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] small {
+        color: #aaa !important;
+    }
+            
+    /* Tab styling */
+    .stTabs [data-baseweb="tab-list"] {
+        background: #1a1a2e !important;
+        padding: 0 1rem !important;
+        gap: 0 !important;
+    }
+    .stTabs [data-baseweb="tab"] {
+        color: #aaaaaa !important;
+        background: transparent !important;
+        border-bottom: 3px solid transparent !important;
+        padding: 0.75rem 1.5rem !important;
+        font-size: 15px !important;
+        font-weight: 600 !important;
+    }
+    .stTabs [aria-selected="true"] {
+        color: #FFD700 !important;
+        border-bottom: 3px solid #FFD700 !important;
+        background: transparent !important;
+    }
+    .stTabs [data-baseweb="tab-panel"] {
+        padding: 1.5rem 2rem !important;
+        background: #f0f2f6 !important;
+    }
+
+    /* Metric card */
+    .metric-box {
+        background: black;
+        border-radius: 12px;
+        padding: 1.2rem 1.5rem;
+        border-left: 5px solid #FFD700;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        text-align: center;
+        height: 110px !important;
+        min-height: 110px !important;
+        max-height: 110px !important;
+        display: flex !important;
+        flex-direction: column !important;
+        justify-content: center !important;
+        align-items: center !important;
+        overflow: hidden !important;
+    }
+    .metric-box .label {
+        font-size: 12px;
+        font-weight: 700;
+        color: #ffffff;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 6px;
+    }
+    .metric-box .value {
+        font-size: 30px;
+        font-weight: 800;
+        color: #ffffff;
+        line-height: 1;
+    }
+    .metric-box .unit {
+        font-size: 14px;
+        font-weight: 500;
+        color: #555;
+    }
+    .metric-box .sub {
+        font-size: 12px;
+        color: #888;
+        margin-top: 4px;
+    }
+    .metric-box.blue { border-left-color: #1a5fb4; }
+    .metric-box.green { border-left-color: #2e7d32; }
+    .metric-box.red { border-left-color: #c0392b; }
+
+    /* Section header */
+    .section-header {
+        background: #1a1a2e;
+        color: #FFD700 !important;
+        padding: 0.6rem 1.2rem;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin: 1rem 0 0.75rem;
+    }
+
+    /* Card putih */
+    .white-card {
+        background: white;
+        border-radius: 12px;
+        padding: 1.5rem;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+        margin-bottom: 1rem;
+    }
+
+    /* Status box */
+    .status-warning {
+        background: #fff8e1;
+        border-left: 4px solid #f57c00;
+        padding: 0.75rem 1rem;
+        border-radius: 6px;
+        color: #5d4037;
+        font-size: 14px;
+        font-weight: 500;
+    }
+    .status-success {
+        background: #e8f5e9;
+        border-left: 4px solid #2e7d32;
+        padding: 0.75rem 1rem;
+        border-radius: 6px;
+        color: #1b5e20;
+        font-size: 14px;
+        font-weight: 500;
+    }
+    .status-info {
+        background: #e3f2fd;
+        border-left: 4px solid #1565c0;
+        padding: 0.75rem 1rem;
+        border-radius: 6px;
+        color: #0d47a1;
+        font-size: 14px;
+        font-weight: 500;
+    }
+
+    /* Tombol utama */
+    .stButton > button {
+        background: #1a1a2e !important;
+        color: #FFD700 !important;
+        border: 2px solid #FFD700 !important;
+        border-radius: 8px !important;
+        font-weight: 700 !important;
+        font-size: 15px !important;
+        padding: 0.5rem 1.5rem !important;
+        width: 100% !important;
+        transition: all 0.2s !important;
+    }
+    .stButton > button:hover {
+        background: #FFD700 !important;
+        color: #1a1a2e !important;
+    }
+
+    /* Download button */
+    .stDownloadButton > button {
+        background: white !important;
+        color: #1a1a2e !important;
+        border: 2px solid #1a1a2e !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+    }
+
+    /* Slider track saja yang kuning */
+    .stSlider [data-baseweb="slider"] {
+    }
+
+    /* angka min max tanpa background */
+    .stSlider span {
+        background: transparent !important;
+    }
+
+    /* Input text */
+    .stTextInput input, .stNumberInput input {
+        border: 2px solid #1a1a2e !important;
+        border-radius: 8px !important;
+        color: #1a1a2e !important;
+        font-size: 15px !important;
+    }
+
+    /* Selectbox */
+    .stSelectbox > div > div {
+        border: 2px solid #1a1a2e !important;
+        border-radius: 8px !important;
+    }
+
+    /* Progress bar */
+    .stProgress > div > div > div {
+        background: #FFD700 !important;
+    }
+
+    /* Expander */
+    .streamlit-expanderHeader {
+        background: #1a1a2e !important;
+        color: white !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+    }
+
+    /* Dataframe */
+    .stDataFrame {
+        border: 2px solid #1a1a2e !important;
+        border-radius: 8px !important;
+    }
+
+    /* Forecast tabel header */
+    .tabel-title {
+        background: #1a1a2e;
+        color: #FFD700;
+        padding: 0.5rem 1rem;
+        border-radius: 8px 8px 0 0;
+        font-weight: 700;
+        font-size: 14px;
+        text-transform: uppercase;
+    }
+    /* File uploader kecil & transparan */
+    [data-testid="stFileUploader"] section {
+        padding: 0.5rem !important;
+        border: 1px dashed #FFD700 !important;
+        background: transparent !important;
+    }
+
+    [data-testid="stFileUploaderDropzone"] {
+        background: transparent !important;
+        padding: 0.5rem !important;
+    }
+
+    /* tombol browse */
+    [data-testid="stFileUploader"] button {
+        background: #FFD700 !important;
+        color: #1a1a2e !important;
+        border-radius: 6px !important;
+        font-weight: 600 !important;
+    }
+    
+    /* selectbox sidebar */
+    [data-testid="stSidebar"] [data-baseweb="select"] {
+        background: #2d2d44 !important;
+        border: 1px solid #FFD700 !important;
+        border-radius: 6px !important;
+    }
+
+    [data-testid="stSidebar"] [data-baseweb="select"] span {
+        color: white !important;
+    }
+            
+    /* teks dalam file uploader */
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] span {
+        color: #e0e0e0 !important;
+    }
+
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] small {
+        color: #bbbbbb !important;
+    }
+
+    /* teks drag drop */
+    [data-testid="stSidebar"] [data-testid="stFileUploader"] div {
+        color: #e0e0e0 !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# SESSION STATE
+# ─────────────────────────────────────────────
+for key, default in {
+    "model"          : None,
+    "scaler"         : None,
+    "data_loaded"    : False,
+    "model_trained"  : False,
+    "train_history"  : None,
+    "results"        : None,
+    "dates"          : None,
+    "prices"         : None,
+    "trend"          : None,
+    "seasonal"       : None,
+    "residual"       : None,
+    "resid_sc"       : None,
+    "LOOK_BACK"      : 12,
+    "split"          : None,
+    "train_idx"      : None,
+    "test_idx"       : None,
+}.items():
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+# SIDEBAR
+# ─────────────────────────────────────────────
+with st.sidebar:
+    # Logo & Judul Sidebar
+    st.markdown("""
+    <div style='text-align:center; padding:0.3rem 0 0.4rem'>
+        <div style='font-size:28px; font-weight:900;
+                    color:#FFD700; letter-spacing:2px'>
+            COAL
+        </div>
+        <div style='font-size:11px; color:#aaa;
+                    letter-spacing:3px; margin-top:2px'>
+            FORECAST TOOL
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <hr style='border:1px solid #FFD700; margin:0 0 1rem'>
+    """, unsafe_allow_html=True)
+
+    # ── UPLOAD DATA ───────────────────────────
+    st.markdown("""
+    <div style='color:#FFD700; font-weight:700;
+                font-size:13px; text-transform:uppercase;
+                letter-spacing:0.05em; margin-bottom:8px'>
+        1. Upload Data CSV
+    </div>
+    """, unsafe_allow_html=True)
+
+    uploaded_file = st.file_uploader(
+        "Pilih file CSV",
+        type=["csv"],
+        label_visibility="collapsed"
+    )
+
+    sep_opt = st.selectbox(
+        "Separator",
+        options=[";", ",", "|"],
+        index=0
+    )
+
+    if uploaded_file:
+        try:
+            df_raw = pd.read_csv(
+                uploaded_file, sep=sep_opt)
+
+            date_col = next(
+                (c for c in df_raw.columns if any(
+                    k in c.lower() for k in
+                    ["date","period","month","time"]
+                )), df_raw.columns[0])
+            price_col = next(
+                (c for c in df_raw.columns if any(
+                    k in c.lower() for k in
+                    ["price","ici","value","usd"]
+                )), df_raw.columns[1])
+
+            df_raw[date_col] = pd.to_datetime(
+                df_raw[date_col], dayfirst=True,
+                infer_datetime_format=True)
+            df_raw = df_raw.sort_values(
+                date_col).reset_index(drop=True)
+            df_raw[price_col] = pd.to_numeric(
+                df_raw[price_col], errors="coerce")
+            df_raw = df_raw.dropna(subset=[price_col])
+
+            st.session_state.dates  = df_raw[date_col].values
+            st.session_state.prices = df_raw[price_col].values
+            st.session_state.data_loaded = True
+
+            st.markdown(f"""
+            <div class='status-success'>
+                ✓ Data berhasil dimuat<br>
+                {len(df_raw)} baris data
+            </div>
+            """, unsafe_allow_html=True)
+
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── PARAMETER ─────────────────────────────
+    st.markdown("""
+    <div style='color:#FFD700; font-weight:700;
+                font-size:13px; text-transform:uppercase;
+                letter-spacing:0.05em; margin-bottom:8px'>
+        2. Parameter Model
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.expander("STL & Sequence", expanded=False):
+        stl_period  = st.slider("STL Period", 6, 52, 12)
+        look_back   = st.slider("Look Back (minggu)", 4, 52, 12)
+        train_split = st.slider("Train Split (%)", 60, 90, 80, 5)
+
+    with st.expander("Arsitektur LSTM", expanded=False):
+        lstm_unit1 = st.select_slider(
+            "BiLSTM Layer 1",
+            options=[32, 64, 128, 256], value=128)
+        lstm_unit2 = st.select_slider(
+            "BiLSTM Layer 2",
+            options=[16, 32, 64, 128], value=64)
+        dropout = st.slider(
+            "Dropout", 0.1, 0.5, 0.2, 0.1)
+
+    with st.expander("Training", expanded=False):
+        max_epoch  = st.select_slider(
+            "Max Epoch",
+            options=[50,100,200,300,500], value=300)
+        batch_size = st.select_slider(
+            "Batch Size",
+            options=[4, 8, 16, 32], value=8)
+        patience = st.slider(
+            "Early Stop Patience", 10, 50, 25)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── SIMPAN / LOAD MODEL ───────────────────
+    st.markdown("""
+    <div style='color:#FFD700; font-weight:700;
+                font-size:13px; text-transform:uppercase;
+                letter-spacing:0.05em; margin-bottom:8px'>
+        3. Simpan / Load Model
+    </div>
+    """, unsafe_allow_html=True)
+
+    if st.session_state.model_trained:
+        if st.button("Simpan Model"):
+            st.session_state.model.save(
+                "coal_bilstm.keras")
+            st.success("✓ Tersimpan!")
+
+    load_f = st.file_uploader(
+        "Load model (.keras/.h5)",
+        type=["keras","h5"],
+        key="model_up",
+        label_visibility="collapsed"
+    )
+    if load_f:
+        with open("tmp_model.keras","wb") as f:
+            f.write(load_f.read())
+        st.session_state.model = load_model(
+            "tmp_model.keras")
+        st.session_state.model_trained = True
+        st.success("✓ Model dimuat!")
+
+# ─────────────────────────────────────────────
+# HEADER UTAMA
+# ─────────────────────────────────────────────
+# HEADER UTAMA 
+col_logo, col_mid, col_right = st.columns([1,2,1])
+
+with col_logo:
+    st.image("logo perusahaan.png", width=250)
+
+with col_mid:
+    st.markdown("""
+    <div style='text-align:center; padding:0.5rem 0'>
+        <h1 style='font-size:30px; font-weight:1000;
+                   color:#1a1a2e; margin:0'>
+            Dashboard Forecasting
+        </h1>
+        <p style='font-size:18px; color:#333;
+                  margin:4px 0 0'>
+            Thermal Coal ICI 4 4200 GAR &nbsp;·&nbsp;
+            STL + Bidirectional LSTM
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# TABS
+
+tab1, tab2, tab3 = st.tabs([
+    "  Training  ",
+    "  Evaluasi  ",
+    "  Forecast  "
+])
+
+# TAB 1: TRAINING
+with tab1:
+    if not st.session_state.data_loaded:
+        st.markdown("""
+        <div class='status-warning'>
+            ⚠ Upload data CSV terlebih dahulu di sidebar kiri
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        prices = st.session_state.prices
+        dates  = st.session_state.dates
+
+        # Info data
+        st.markdown("""
+        <div class='section-header'>Informasi Dataset</div>
+        """, unsafe_allow_html=True)
+
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.markdown(f"""
+            <div class='metric-box'>
+                <div class='label'>Total Data</div>
+                <div class='value'>{len(prices)}
+                    <span class='unit'>minggu</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        with c2:
+            st.markdown(f"""
+            <div class='metric-box blue'>
+                <div class='label'>Periode</div>
+                <div class='value' style='font-size:20px'>
+                    {pd.Timestamp(dates[0]).year}–
+                    {pd.Timestamp(dates[-1]).year}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        with c3:
+            st.markdown(f"""
+            <div class='metric-box green'>
+                <div class='label'>Harga Min</div>
+                <div class='value'>{prices.min():.1f}
+                    <span class='unit'>USD/t</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        with c4:
+            st.markdown(f"""
+            <div class='metric-box red'>
+                <div class='label'>Harga Max</div>
+                <div class='value'>{prices.max():.1f}
+                    <span class='unit'>USD/t</span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── GRAFIK DATASET ────────────────────
+        st.markdown("""
+        <div class='section-header'>Grafik Dataset</div>
+        """, unsafe_allow_html=True)
+
+        fig_ds, ax_ds = plt.subplots(figsize=(14, 4))
+        fig_ds.patch.set_facecolor("white")
+        ax_ds.set_facecolor("#fafafa")
+
+        ax_ds.plot(
+            pd.to_datetime(dates), prices,
+            color="#1a1a2e", lw=1.2,
+            label="Harga ICI 4"
+        )
+
+        # Warnai area train & test
+        split_date = pd.Timestamp(
+            dates[st.session_state.train_idx[-1]]
+            if st.session_state.model_trained
+            else dates[int(len(dates)*0.8)]
+        )
+
+        ax_ds.axvspan(
+            pd.Timestamp(dates[0]),
+            split_date,
+            alpha=0.08, color="#1a5fb4",
+            label="Periode Train (80%)"
+        )
+        ax_ds.axvspan(
+            split_date,
+            pd.Timestamp(dates[-1]),
+            alpha=0.08, color="#c0392b",
+            label="Periode Test (20%)"
+        )
+
+        # Tandai harga max & min
+        idx_max = np.argmax(prices)
+        idx_min = np.argmin(prices)
+
+        ax_ds.scatter(
+            pd.Timestamp(dates[idx_max]),
+            prices[idx_max],
+            color="#c0392b", s=60, zorder=5
+        )
+        ax_ds.annotate(
+            f"Max: {prices[idx_max]:.1f} USD/t",
+            xy=(pd.Timestamp(dates[idx_max]),
+                prices[idx_max]),
+            xytext=(10, -20),
+            textcoords="offset points",
+            fontsize=9,
+            fontweight="bold"
+        )
+
+        ax_ds.scatter(
+            pd.Timestamp(dates[idx_min]),
+            prices[idx_min],
+            color="#2e7d32", s=60, zorder=5
+        )
+        ax_ds.annotate(
+            f"Min: {prices[idx_min]:.1f} USD/t",
+            xy=(pd.Timestamp(dates[idx_min]),
+                prices[idx_min]),
+            xytext=(10, 10),
+            textcoords="offset points",
+            fontsize=9, color="#2e7d32",
+            fontweight="bold"
+        )
+
+        ax_ds.set_title(
+            "Harga Batubara Termal ICI 4 (2014–2025)",
+            fontsize=14, fontweight="bold",
+            color="#1a1a2e"
+        )
+        ax_ds.set_ylabel("Harga (USD/t)", fontsize=10)
+        ax_ds.set_xlabel("Tahun", fontsize=10)
+        ax_ds.legend(fontsize=9, loc="upper left")
+        ax_ds.grid(alpha=0.2)
+        ax_ds.xaxis.set_major_formatter(
+            mdates.DateFormatter("%Y"))
+        ax_ds.xaxis.set_major_locator(
+            mdates.YearLocator())
+        ax_ds.tick_params(axis="x", labelsize=9)
+        ax_ds.tick_params(axis="y", labelsize=9)
+
+        plt.tight_layout()
+        st.pyplot(fig_ds)
+        plt.close()
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ADF Test
+        st.markdown("""
+        <div class='section-header'>
+            Uji Stasioneritas (ADF Test)
+        </div>
+        """, unsafe_allow_html=True)
+
+        adf = adfuller(prices, autolag="AIC")
+        a1, a2, a3, a4 = st.columns(4)
+        with a1:
+            st.markdown(f"""
+            <div class='metric-box'>
+                <div class='label'>ADF Statistic</div>
+                <div class='value' style='font-size:22px'>
+                    {adf[0]:.3f}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        with a2:
+            warna = "green" if adf[1] < 0.05 else "red"
+            st.markdown(f"""
+            <div class='metric-box {warna}'>
+                <div class='label'>p-value</div>
+                <div class='value' style='font-size:22px'>
+                    {adf[1]:.4f}
+                </div>
+                <div class='sub'>
+                    {"✓ Stasioner" if adf[1]<0.05
+                     else "✗ Tidak Stasioner"}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        with a3:
+            st.markdown(f"""
+            <div class='metric-box'>
+                <div class='label'>Critical 1%</div>
+                <div class='value' style='font-size:22px'>
+                    {adf[4]['1%']:.3f}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        with a4:
+            st.markdown(f"""
+            <div class='metric-box'>
+                <div class='label'>Critical 5%</div>
+                <div class='value' style='font-size:22px'>
+                    {adf[4]['5%']:.3f}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Tombol Training
+        st.markdown("""
+        <div class='section-header'>Mulai Training</div>
+        """, unsafe_allow_html=True)
+
+        st.markdown(f"""
+        <div class='status-info'>
+            Konfigurasi: BiLSTM({lstm_unit1},{lstm_unit2}) &nbsp;·&nbsp;
+            LookBack={look_back} &nbsp;·&nbsp;
+            Epoch={max_epoch} &nbsp;·&nbsp;
+            Batch={batch_size} &nbsp;·&nbsp;
+            Split={train_split}%
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        col_btn = st.columns([1, 2, 1])
+        with col_btn[1]:
+            train_btn = st.button(
+                "Mulai Training Model",
+                use_container_width=True
+            )
+
+        if train_btn:
+            # STL
+            with st.spinner("Menjalankan STL Decomposition..."):
+                stl    = STL(prices, period=stl_period,
+                             robust=True)
+                result = stl.fit()
+                trend    = result.trend
+                seasonal = result.seasonal
+                residual = result.resid
+                scaler   = MinMaxScaler(
+                    feature_range=(-1, 1))
+                resid_sc = scaler.fit_transform(
+                    residual.reshape(-1, 1))
+
+                st.session_state.trend    = trend
+                st.session_state.seasonal = seasonal
+                st.session_state.residual = residual
+                st.session_state.resid_sc = resid_sc
+                st.session_state.scaler   = scaler
+                st.session_state.LOOK_BACK = look_back
+
+            # Sequences
+            def make_seq(data, lb):
+                X, y = [], []
+                for i in range(lb, len(data)):
+                    X.append(data[i-lb:i, 0])
+                    y.append(data[i, 0])
+                return np.array(X), np.array(y)
+
+            X, y  = make_seq(resid_sc, look_back)
+            split = int(len(X) * train_split / 100)
+            X_train = X[:split].reshape(-1, look_back, 1)
+            X_test  = X[split:].reshape(-1, look_back, 1)
+            y_train = y[:split]
+            train_idx = np.arange(
+                look_back, look_back + len(X_train))
+            test_idx  = np.arange(
+                look_back + split,
+                look_back + split + len(X_test))
+
+            st.session_state.split     = split
+            st.session_state.train_idx = train_idx
+            st.session_state.test_idx  = test_idx
+
+            # Model
+            model = Sequential([
+                Bidirectional(
+                    LSTM(lstm_unit1,
+                         return_sequences=True),
+                    input_shape=(look_back, 1)),
+                Dropout(dropout),
+                Bidirectional(
+                    LSTM(lstm_unit2,
+                         return_sequences=False)),
+                Dropout(dropout),
+                Dense(32, activation="relu"),
+                Dense(1)
+            ])
+            model.compile(
+                optimizer="adam", loss="huber")
+
+            # Progress
+            st.markdown("""
+            <div style='font-weight:700; color:#1a1a2e;
+                        margin:1rem 0 0.5rem'>
+                Progress Training:
+            </div>
+            """, unsafe_allow_html=True)
+
+            prog_bar   = st.progress(0)
+            status_txt = st.empty()
+            chart_spot = st.empty()
+            train_losses, val_losses = [], []
+
+            class CB(Callback):
+                def on_epoch_end(self, epoch, logs=None):
+                    logs = logs or {}
+                    tl = logs.get("loss", 0)
+                    vl = logs.get("val_loss", 0)
+                    train_losses.append(tl)
+                    val_losses.append(vl)
+                    prog = min(
+                        (epoch+1)/max_epoch, 1.0)
+                    prog_bar.progress(prog)
+                    status_txt.markdown(
+                        f"**Epoch {epoch+1}/{max_epoch}** "
+                        f"&nbsp;|&nbsp; "
+                        f"Train Loss: **{tl:.5f}** "
+                        f"&nbsp;|&nbsp; "
+                        f"Val Loss: **{vl:.5f}**"
+                    )
+                    if (epoch+1) % 10 == 0 and epoch > 5:
+                        fig_l, ax_l = plt.subplots(
+                            figsize=(8, 2.5))
+                        fig_l.patch.set_facecolor("white")
+                        ax_l.plot(train_losses,
+                                  color="#1a1a2e",
+                                  lw=2,
+                                  label="Train Loss")
+                        ax_l.plot(val_losses,
+                                  color="#FFD700",
+                                  lw=2,
+                                  label="Val Loss")
+                        ax_l.set_facecolor("#f8f8f8")
+                        ax_l.legend(fontsize=9)
+                        ax_l.grid(alpha=0.2)
+                        ax_l.set_xlabel(
+                            "Epoch", fontsize=9)
+                        plt.tight_layout()
+                        chart_spot.pyplot(fig_l)
+                        plt.close()
+
+            es = EarlyStopping(
+                monitor="val_loss",
+                patience=patience,
+                restore_best_weights=True)
+
+            history = model.fit(
+                X_train, y_train,
+                epochs=max_epoch,
+                batch_size=batch_size,
+                validation_split=0.1,
+                callbacks=[es, CB()],
+                verbose=0)
+
+            prog_bar.progress(1.0)
+            best_ep = np.argmin(
+                history.history["val_loss"]) + 1
+
+            # Hitung prediksi
+            tr_pred = scaler.inverse_transform(
+                model.predict(X_train, verbose=0))
+            te_pred = scaler.inverse_transform(
+                model.predict(X_test, verbose=0))
+
+            tr_full = (trend[train_idx]
+                       + seasonal[train_idx]
+                       + tr_pred.flatten())
+            te_full = (trend[test_idx]
+                       + seasonal[test_idx]
+                       + te_pred.flatten())
+
+            y_tr = prices[train_idx]
+            y_te = prices[test_idx]
+
+            def mape_fn(a, p):
+                return np.mean(
+                    np.abs((a-p)/a))*100
+
+            st.session_state.model         = model
+            st.session_state.model_trained = True
+            st.session_state.train_history = history
+            st.session_state.results = {
+                "train_pred" : tr_full,
+                "test_pred"  : te_full,
+                "y_train"    : y_tr,
+                "y_test"     : y_te,
+                "mae"   : mean_absolute_error(
+                    y_te, te_full),
+                "rmse"  : np.sqrt(mean_squared_error(
+                    y_te, te_full)),
+                "mape"  : mape_fn(y_te, te_full),
+                "r2"    : r2_score(y_te, te_full),
+                "best_epoch": best_ep,
+            }
+
+            status_txt.markdown(f"""
+            <div class='status-success'>
+                ✅ Training selesai! &nbsp;
+                Best epoch: <b>{best_ep}</b> &nbsp;|&nbsp;
+                Val Loss: <b>
+                {min(history.history['val_loss']):.5f}
+                </b>
+            </div>
+            """, unsafe_allow_html=True)
+
+# TAB 2: EVALUASI
+with tab2:
+    if not st.session_state.model_trained:
+        st.markdown("""
+        <div class='status-warning'>
+            ⚠ Lakukan training terlebih dahulu di Tab Training
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        res  = st.session_state.results
+        hist = st.session_state.train_history
+        dates_all = st.session_state.dates
+        test_dates = pd.to_datetime(
+            dates_all[st.session_state.test_idx])
+
+        # Metrik
+        st.markdown("""
+        <div class='section-header'>Akurasi Model</div>
+        """, unsafe_allow_html=True)
+
+        m1, m2, m3, m4, m5 = st.columns(5)
+        metrics_data = [
+            (m1, "MAE",
+             f"{res['mae']:.2f}","USD/t",""),
+            (m2, "RMSE",
+             f"{res['rmse']:.2f}","USD/t","blue"),
+            (m3, "MAPE",
+             f"{res['mape']:.2f}","%",
+             "green" if res['mape']<10 else "red"),
+            (m4, "R² Score",
+             f"{res['r2']:.4f}","","blue"),
+            (m5, "Akurasi",
+             f"{100-res['mape']:.1f}","%","green"),
+        ]
+        for col, lbl, val, unit, color in metrics_data:
+            with col:
+                st.markdown(f"""
+                <div class='metric-box {color}'>
+                    <div class='label'>{lbl}</div>
+                    <div class='value'>{val}
+                        <span class='unit'>{unit}</span>
+                    </div>
+                    <div class='sub'>Test Set</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Grafik 2x2
+        st.markdown("""
+        <div class='section-header'>Grafik Evaluasi</div>
+        """, unsafe_allow_html=True)
+
+        g1, g2 = st.columns(2)
+
+        # Learning Curve
+        with g1:
+            fig_lc, ax_lc = plt.subplots(figsize=(6,3.5))
+            fig_lc.patch.set_facecolor("white")
+            ax_lc.set_facecolor("#fafafa")
+            ax_lc.plot(hist.history["loss"],
+                       color="#1a1a2e", lw=2,
+                       label="Train Loss")
+            ax_lc.plot(hist.history["val_loss"],
+                       color="#FFD700", lw=2,
+                       label="Val Loss")
+            ax_lc.axvline(res["best_epoch"]-1,
+                          color="#c0392b", lw=1.5,
+                          ls="--",
+                          label=f"Best Epoch "
+                          f"({res['best_epoch']})")
+            ax_lc.set_title("Learning Curve",
+                            fontsize=12,
+                            fontweight="bold",
+                            color="#1a1a2e")
+            ax_lc.set_xlabel("Epoch")
+            ax_lc.set_ylabel("Loss")
+            ax_lc.legend(fontsize=9)
+            ax_lc.grid(alpha=0.2)
+            plt.tight_layout()
+            st.pyplot(fig_lc)
+            plt.close()
+
+        # Actual vs Predicted
+        with g2:
+            fig_av, ax_av = plt.subplots(figsize=(6,3.5))
+            fig_av.patch.set_facecolor("white")
+            ax_av.set_facecolor("#fafafa")
+            ax_av.plot(test_dates, res["y_test"],
+                       color="#1a1a2e", lw=2,
+                       label="Actual")
+            ax_av.plot(test_dates, res["test_pred"],
+                       color="#1a5fb4", lw=2,
+                       ls="--", label="Predicted")
+            ax_av.set_title("Actual vs Predicted (Test)",
+                            fontsize=12,
+                            fontweight="bold",
+                            color="#1a1a2e")
+            ax_av.set_ylabel("Price (USD/t)")
+            ax_av.legend(fontsize=9)
+            ax_av.grid(alpha=0.2)
+            ax_av.xaxis.set_major_formatter(
+                mdates.DateFormatter("%b %Y"))
+            ax_av.tick_params(
+                axis="x", rotation=30)
+            plt.tight_layout()
+            st.pyplot(fig_av)
+            plt.close()
+
+        g3, g4 = st.columns(2)
+
+        # Scatter
+        with g3:
+            fig_sc, ax_sc = plt.subplots(figsize=(5,4))
+            fig_sc.patch.set_facecolor("white")
+            ax_sc.set_facecolor("#fafafa")
+            ax_sc.scatter(res["y_test"],
+                          res["test_pred"],
+                          color="#1a5fb4",
+                          alpha=0.6, s=25,
+                          edgecolors="white",
+                          linewidth=0.5)
+            lims = [
+                min(res["y_test"].min(),
+                    res["test_pred"].min())-2,
+                max(res["y_test"].max(),
+                    res["test_pred"].max())+2
+            ]
+            ax_sc.plot(lims, lims,
+                       color="#FFD700", lw=2,
+                       ls="--", label="Perfect Fit")
+            ax_sc.set_xlabel("Actual (USD/t)")
+            ax_sc.set_ylabel("Predicted (USD/t)")
+            ax_sc.set_title(
+                f"Scatter Plot (R²={res['r2']:.4f})",
+                fontsize=12, fontweight="bold",
+                color="#1a1a2e")
+            ax_sc.legend(fontsize=9)
+            ax_sc.grid(alpha=0.2)
+            plt.tight_layout()
+            st.pyplot(fig_sc)
+            plt.close()
+
+        # Residual
+        with g4:
+            residuals = res["y_test"] - res["test_pred"]
+            fig_res, ax_res = plt.subplots(figsize=(5,4))
+            fig_res.patch.set_facecolor("white")
+            ax_res.set_facecolor("#fafafa")
+            colors_bar = [
+                "#2e7d32" if r >= 0
+                else "#c0392b"
+                for r in residuals
+            ]
+            ax_res.bar(test_dates, residuals,
+                       color=colors_bar,
+                       alpha=0.8, width=5)
+            ax_res.axhline(0, color="#1a1a2e", lw=1.5)
+            ax_res.set_title(
+                "Residual (Actual − Predicted)",
+                fontsize=12, fontweight="bold",
+                color="#1a1a2e")
+            ax_res.set_ylabel("Residual (USD/t)")
+            ax_res.xaxis.set_major_formatter(
+                mdates.DateFormatter("%b %Y"))
+            ax_res.tick_params(
+                axis="x", rotation=30)
+            ax_res.grid(alpha=0.2)
+            plt.tight_layout()
+            st.pyplot(fig_res)
+            plt.close()
+
+        # Download
+        st.markdown("<br>", unsafe_allow_html=True)
+        df_eval = pd.DataFrame({
+            "Date"     : test_dates.strftime("%Y-%m-%d"),
+            "Actual"   : res["y_test"].round(2),
+            "Predicted": res["test_pred"].round(2),
+            "Residual" : residuals.round(2),
+            "Error_%"  : (
+                np.abs(residuals/res["y_test"])*100
+            ).round(2)
+        })
+        dl_col = st.columns([1, 2, 1])
+        with dl_col[1]:
+            st.download_button(
+                "Download Hasil Evaluasi (CSV)",
+                data=df_eval.to_csv(index=False),
+                file_name="evaluasi_model.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+# TAB 3: FORECAST
+with tab3:
+    if not st.session_state.model_trained:
+        st.markdown("""
+        <div class='status-warning'>
+            ⚠ Lakukan training terlebih dahulu di Tab Training
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        model    = st.session_state.model
+        scaler   = st.session_state.scaler
+        trend    = st.session_state.trend
+        seasonal = st.session_state.seasonal
+        resid_sc = st.session_state.resid_sc
+        dates    = st.session_state.dates
+        prices   = st.session_state.prices
+        LB       = st.session_state.LOOK_BACK
+        res      = st.session_state.results
+
+        last_price = prices[-1]
+        last_date  = pd.Timestamp(dates[-1])
+
+        # Input
+        st.markdown("""
+        <div class='section-header'>Input Prediksi</div>
+        """, unsafe_allow_html=True)
+
+        fc1, fc2 = st.columns([4, 1])
+        with fc1:
+            n_weeks = st.slider(
+                "Jumlah Minggu ke Depan",
+                1, 52, 12, 1)
+            tgl_m = last_date + pd.DateOffset(weeks=1)
+            tgl_a = last_date + pd.DateOffset(
+                weeks=n_weeks)
+            st.markdown(f"""
+            <div class='status-info'>
+                Forecast periode: &nbsp;
+                <b>{tgl_m.strftime('%d %b %Y')}</b>
+                &nbsp;→&nbsp;
+                <b>{tgl_a.strftime('%d %b %Y')}</b>
+            </div>
+            """, unsafe_allow_html=True)
+        with fc2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            run_fc = st.button(
+                "Prediksi",
+                use_container_width=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Jalankan forecast
+        # STEP 1: Hitung residual dulu
+        last_seq = resid_sc[-LB:].reshape(1, LB, 1)
+        fut_sc   = []
+
+        for _ in range(n_weeks):
+            nxt = model.predict(last_seq, verbose=0)[0, 0]
+            nxt = np.clip(nxt, -0.5, 0.5)
+            noise = np.random.normal(0, 0.02)
+            nxt   = np.clip(nxt + noise, -0.6, 0.6)
+            fut_sc.append(nxt)
+            last_seq = np.roll(last_seq, -1, axis=1)
+            last_seq[0, -1, 0] = nxt
+
+        fut_resid = scaler.inverse_transform(
+            np.array(fut_sc).reshape(-1, 1)
+        ).flatten()
+
+        # STEP 2: Hitung trend
+        tail      = 52
+        poly      = np.polyfit(
+            np.arange(tail), trend[-tail:], deg=2)
+        fut_trend = np.polyval(
+            poly, np.arange(tail, tail + n_weeks))
+        fut_trend = np.clip(
+            fut_trend,
+            last_price * 0.7,
+            last_price * 1.3
+        )
+
+        # STEP 3: Hitung seasonal
+        fut_seas = np.array([
+            seasonal[-(12 - (i % 12))]
+            for i in range(n_weeks)
+        ])
+
+        # STEP 4: Rekonstruksi harga
+        fut_prices = fut_trend + fut_seas + fut_resid
+        fut_prices = np.clip(
+            fut_prices,
+            last_price * 0.6,
+            last_price * 1.5
+        )
+
+        # STEP 5: Buat tanggal ← INI HARUS ADA SEBELUM GRAFIK
+        fut_dates = pd.date_range(
+            start=last_date + pd.DateOffset(weeks=1),
+            periods=n_weeks,
+            freq="W-FRI"
+        )
+
+        # Metric cards
+        harga_next = fut_prices[0]
+        selisih    = harga_next - last_price
+        warna_sel  = "green" if selisih >= 0 else "red"
+        arah       = "↑" if selisih >= 0 else "↓"
+
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        with mc1:
+            st.markdown(f"""
+            <div class='metric-box'>
+                <div class='label'>Harga Terakhir</div>
+                <div class='value'>{last_price:.1f}
+                    <span class='unit'>USD/t</span>
+                </div>
+                <div class='sub'>
+                    {last_date.strftime('%d %b %Y')}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        with mc2:
+            st.markdown(f"""
+            <div class='metric-box {warna_sel}'>
+                <div class='label'>
+                    Prediksi Minggu Depan
+                </div>
+                <div class='value'>{harga_next:.1f}
+                    <span class='unit'>USD/t</span>
+                </div>
+                <div class='sub'>
+                    {arah} {abs(selisih):.2f} USD/t
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        with mc3:
+            st.markdown(f"""
+            <div class='metric-box blue'>
+                <div class='label'>Akurasi Model</div>
+                <div class='value'>
+                    {100-res['mape']:.1f}
+                    <span class='unit'>%</span>
+                </div>
+                <div class='sub'>
+                    MAPE {res['mape']:.1f}%
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        with mc4:
+            st.markdown(f"""
+            <div class='metric-box green'>
+                <div class='label'>R² Score</div>
+                <div class='value'>{res['r2']:.3f}</div>
+                <div class='sub'>Test Set</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Grafik + Tabel
+        st.markdown("""
+        <div class='section-header'>
+            Grafik & Tabel Forecast
+        </div>
+        """, unsafe_allow_html=True)
+
+        gc, tc = st.columns([3, 2])
+
+        with gc:
+            test_dates_p = pd.to_datetime(
+                dates[st.session_state.test_idx])
+            fig_fc, ax_fc = plt.subplots(
+                figsize=(9, 4.5))
+            fig_fc.patch.set_facecolor("white")
+            ax_fc.set_facecolor("#fafafa")
+
+            ax_fc.plot(pd.to_datetime(dates), prices,
+                       color="#1a1a2e", lw=1.2,
+                       label="Actual", alpha=0.8)
+            ax_fc.plot(test_dates_p,
+                       res["test_pred"],
+                       color="#1a5fb4", lw=2,
+                       ls="--",
+                       label="Predicted (Test)")
+            ax_fc.plot(fut_dates, fut_prices,
+                       color="#FFD700", lw=2.5,
+                       ls="--",
+                       label=f"Forecast {n_weeks}w",
+                       marker="o", markersize=3)
+            ax_fc.fill_between(
+                fut_dates,
+                fut_prices*0.95,
+                fut_prices*1.05,
+                alpha=0.2, color="#FFD700")
+            ax_fc.axvline(
+                pd.Timestamp(dates[-1]),
+                color="#c0392b", lw=1.5,
+                ls=":", alpha=0.8,
+                label="Data terakhir")
+            ax_fc.set_title(
+                f"Forecast {n_weeks} Minggu ke Depan",
+                fontsize=12, fontweight="bold",
+                color="#1a1a2e")
+            ax_fc.set_ylabel("Price (USD/t)")
+            ax_fc.legend(fontsize=8,
+                          loc="upper left")
+            ax_fc.grid(alpha=0.2)
+            ax_fc.xaxis.set_major_formatter(
+                mdates.DateFormatter("%b %Y"))
+            ax_fc.tick_params(
+                axis="x", rotation=30,
+                labelsize=9)
+            ax_fc.set_xlim(
+                test_dates_p[0]
+                - pd.DateOffset(months=1),
+                fut_dates[-1]
+                + pd.DateOffset(weeks=2))
+            plt.tight_layout()
+            st.pyplot(fig_fc)
+            plt.close()
+
+        with tc:
+            # Tabel forecast
+            perubahan = []
+            for i in range(len(fut_prices)):
+                prev = (fut_prices[i-1]
+                        if i > 0 else last_price)
+                pct  = (fut_prices[i]-prev)/prev*100
+                perubahan.append(
+                    f"+{pct:.1f}%"
+                    if pct >= 0 else f"{pct:.1f}%")
+
+            df_fc = pd.DataFrame({
+                "Tanggal" : fut_dates.strftime(
+                    "%d %b %Y"),
+                "Prediksi (USD/t)": [
+                    f"{p:.2f}"
+                    for p in fut_prices],
+                "Perubahan": perubahan
+            })
+
+            def style_pct(val):
+                c = ("#2e7d32"
+                     if "+" in str(val)
+                     else "#c0392b")
+                return (f"color: {c}; "
+                        f"font-weight: bold")
+
+            st.dataframe(
+                df_fc.style.applymap(
+                    style_pct,
+                    subset=["Perubahan"]),
+                height=380,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            # Download
+            st.download_button(
+                "Download Forecast (CSV)",
+                data=df_fc.to_csv(index=False),
+                file_name="forecast.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
